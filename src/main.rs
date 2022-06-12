@@ -161,7 +161,10 @@ where
     for path in input_file_paths {
         let output_file_path = {
             let path_with_extension = path.as_ref().with_extension(output_file_type);
-            output_directory.as_ref().join(path_with_extension)
+            output_directory
+                .as_ref()
+                .strip_prefix(".")?
+                .join(path_with_extension)
         };
         output_file_paths.push(output_file_path);
     }
