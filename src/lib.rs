@@ -3,16 +3,20 @@ use std::{fmt::Display, path::Path, process::ExitStatus, str};
 use tokio::process::Command;
 
 #[derive(Debug)]
-struct FFmpegError {
-    status: ExitStatus,
-    stderr: String,
+pub struct FFmpegError {
+    pub status: ExitStatus,
+    pub stderr: String,
 }
 
 impl std::error::Error for FFmpegError {}
 
 impl Display for FFmpegError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FFmpeg execution failed: {}", self.status)
+        write!(
+            f,
+            "FFmpeg execution failed with status {}:\n{}",
+            self.status, self.stderr
+        )
     }
 }
 
