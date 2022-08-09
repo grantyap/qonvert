@@ -23,20 +23,20 @@ impl Display for FFmpegError {
 pub async fn execute_ffmpeg_encoding(
     input: &Path,
     output: &Path,
-    codec: &str,
+    codec: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-i")
-        .arg(&input)
-        .args(&["-c:v", codec])
+    let mut command = Command::new("ffmpeg");
+    command.arg("-y").args(&["-i", &input.to_string_lossy()]);
+    if let Some(codec) = codec {
+        command.args(&["-c:v", codec]);
+    }
+    command
         .args(&["-movflags", "+faststart"])
         // Ensure that the dimensions are divisible by 2.
         .args(&["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2"])
-        .arg(&output)
-        .output()
-        .await?;
+        .arg(&output);
 
+    let result = command.output().await?;
     match result.status.success() {
         true => Ok(()),
         false => Err(Box::new(FFmpegError {
