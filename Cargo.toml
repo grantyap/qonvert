@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-argparse = "0.2.2"
 futures = "0.3.21"
 tokio = { version = "1", features = ["full"] }
 indicatif = "0.16.2"
+clap = { version = "3.2.16", features = ["derive"] }
 
 [[bin]]
 name = "qo"

@@ -1,4 +1,4 @@
-use argparse::{ArgumentParser, Store, StoreTrue};
+use clap::Parser;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use qonvert::execute_ffmpeg_encoding;
@@ -7,76 +7,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
-    input_directory: String,
-    input_file_type: String,
-    output_directory: String,
+    /// The files to be converted
+    #[clap(value_parser)]
+    input_paths: Vec<PathBuf>,
+
+    /// The directory for the converted files
+    #[clap(short, long, value_parser)]
+    output_directory: Option<PathBuf>,
+
+    /// The file extension of the converted files
+    #[clap(short = 't', long, value_parser)]
     output_file_type: String,
-    codec: String,
+
+    /// The FFmpeg codec to use for conversion
+    #[clap(short, long, value_parser)]
+    codec: Option<String>,
+
+    /// Enable debugging information
+    #[clap(short, long, value_parser, default_value_t = false)]
     verbose: bool,
-}
-
-impl Default for Args {
-    fn default() -> Self {
-        Args {
-            input_directory: ".".to_string(),
-            input_file_type: "webm".to_string(),
-            output_directory: ".".to_string(),
-            output_file_type: "mp4".to_string(),
-            codec: String::default(),
-            verbose: false,
-        }
-    }
-}
-
-fn parse_args() -> Args {
-    let mut args = Args::default();
-    {
-        let mut ap = ArgumentParser::new();
-        ap.set_description("A tool to easily batch convert files using FFmpeg");
-        ap.refer(&mut args.input_file_type).add_argument(
-            "input file type",
-            Store,
-            "The file type of the files in the input directory to convert. Default: webm",
-        );
-        ap.refer(&mut args.output_file_type).add_argument(
-            "output file type",
-            Store,
-            "The output file type of the converted files. Default: mp4",
-        );
-        ap.refer(&mut args.codec).add_option(
-            &["-c"],
-            Store,
-            "The FFmpeg video codec to use. Default: libx265",
-        );
-        ap.refer(&mut args.input_directory).add_option(
-            &["-i", "--input-dir"],
-            Store,
-            "The directory containing the files to convert",
-        );
-        ap.refer(&mut args.output_directory).add_option(
-            &["-o", "--output-dir"],
-            Store,
-            "The directory to place the converted files in",
-        );
-        ap.refer(&mut args.verbose).add_option(
-            &["-v", "--v"],
-            StoreTrue,
-            "Display extra information",
-        );
-        ap.parse_args_or_exit();
-    }
-
-    args.codec = match (
-        args.input_file_type.as_str(),
-        args.output_file_type.as_str(),
-    ) {
-        ("webm", "mp4") => "libx265".to_string(),
-        _ => String::default(),
-    };
-
-    args
 }
 
 #[derive(Debug)]
@@ -96,32 +48,18 @@ impl Display for InvalidDirectoryError {
     }
 }
 
-async fn get_file_paths_of_type_in_directory<T>(
-    directory: T,
-    file_type: &str,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
-where
-    T: AsRef<Path>,
-{
-    if !directory.as_ref().is_dir() {
-        return Err(Box::new(InvalidDirectoryError {
-            path: directory.as_ref().to_path_buf(),
-        }));
-    }
+#[derive(Debug)]
+struct MultipleInputDirectoriesError {}
 
-    let mut results: Vec<PathBuf> = vec![];
-    let mut directory = tokio::fs::read_dir(directory).await?;
-    while let Some(path) = directory.next_entry().await? {
-        let path = path.path();
-        let path_file_type = path.extension();
-        if let Some(path_file_type) = path_file_type {
-            if path_file_type == file_type {
-                results.push(path);
-            }
-        }
-    }
+impl std::error::Error for MultipleInputDirectoriesError {}
 
-    Ok(results)
+impl Display for MultipleInputDirectoriesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Either a single directory or multiple files can be used as input"
+        )
+    }
 }
 
 async fn get_output_file_paths<T, U>(
@@ -154,19 +92,71 @@ where
     Ok(output_file_paths)
 }
 
+async fn get_input_file_paths<T>(
+    input_file_paths: &[T],
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
+where
+    T: AsRef<Path>,
+{
+    // If there's only one path and it is a directory,
+    // return all the file paths inside it.
+    if input_file_paths.len() == 1 {
+        let input_file_path = input_file_paths[0].as_ref();
+        if input_file_path.is_dir() {
+            let mut results: Vec<PathBuf> = vec![];
+
+            let mut directory = tokio::fs::read_dir(input_file_path).await?;
+            while let Some(path) = directory.next_entry().await? {
+                let path = path.path();
+                if path.is_dir() {
+                    continue;
+                }
+                results.push(path);
+            }
+
+            return Ok(results);
+        }
+    }
+
+    let mut results: Vec<PathBuf> = vec![];
+    for input_file_path in input_file_paths {
+        // If there are multiple input paths, none of the paths can be directories.
+        if input_file_path.as_ref().is_dir() {
+            return Err(Box::new(MultipleInputDirectoriesError {}));
+        }
+
+        results.push(input_file_path.as_ref().to_path_buf());
+    }
+
+    Ok(results)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args();
+    let args = Args::parse();
 
-    let input_directory = Path::new(&args.input_directory);
-    let output_directory = Path::new(&args.output_directory);
-
-    let input_file_paths =
-        get_file_paths_of_type_in_directory(input_directory, &args.input_file_type).await?;
+    let input_file_paths = get_input_file_paths(&args.input_paths).await?;
+    let output_directory = args
+        .output_directory
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
     let output_file_paths =
-        get_output_file_paths(output_directory, &input_file_paths, &args.output_file_type).await?;
+        get_output_file_paths(&output_directory, &input_file_paths, &args.output_file_type).await?;
 
-    println!("Converting files with {}:", &args.codec);
+    // Define default codecs for certain file types.
+    let codec = match args.codec {
+        None => match args.output_file_type.as_ref() {
+            "mp4" => Some("libx265".to_string()),
+            _ => None,
+        },
+        Some(c) => Some(c),
+    };
+
+    if let Some(codec) = &codec {
+        println!("Converting files with {}:", codec);
+    } else {
+        println!("Converting:");
+    }
+
     for input_file_path in &input_file_paths {
         println!("  {}", input_file_path.to_string_lossy());
     }
@@ -187,25 +177,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input_path.file_name().unwrap().to_string_lossy()
             ));
 
-            execute_ffmpeg_encoding(input_path, output_path, &args.codec)
-                .await
-                .unwrap_or_else(|_| {
-                    // TODO: Write the error to stderr?
-                    progress_bar.println(format!(
-                        "\x1b[0;31m  {} failed\x1b[0m",
-                        input_path.to_string_lossy()
-                    ));
-                });
+            let encoding_result =
+                execute_ffmpeg_encoding(input_path, output_path, codec.as_deref()).await;
 
             progress_bar.inc(1);
-            progress_bar.println(format!(
-                "\x1b[0;32m  {}\x1b[0m",
-                output_path.to_string_lossy()
-            ));
+            match encoding_result {
+                Ok(_) => {
+                    progress_bar.println(format!(
+                        "\x1b[0;32m  {}\x1b[0m",
+                        output_path.to_string_lossy()
+                    ));
+                }
+                Err(e) => match &args.verbose {
+                    true => {
+                        progress_bar.println(format!(
+                            "\x1b[0;31m  {} failed:\n{}\x1b[0m",
+                            input_path.to_string_lossy(),
+                            e
+                        ));
+                    }
+                    false => {
+                        progress_bar.println(format!(
+                            "\x1b[0;31m  {} failed\x1b[0m",
+                            input_path.to_string_lossy()
+                        ));
+                    }
+                },
+            }
         })
         .await;
 
-    progress_bar.println("");
     progress_bar.finish();
 
     Ok(())
