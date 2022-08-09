@@ -1,12 +1,11 @@
 use argparse::{ArgumentParser, Store, StoreTrue};
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use qonvert::execute_ffmpeg_encoding;
 use std::{
     fmt::Display,
     path::{Path, PathBuf},
-    process::ExitStatus,
 };
-use tokio::process::Command;
 
 #[derive(Debug)]
 struct Args {
@@ -78,51 +77,6 @@ fn parse_args() -> Args {
     };
 
     args
-}
-
-#[derive(Debug)]
-struct FFmpegError {
-    status: ExitStatus,
-}
-
-impl std::error::Error for FFmpegError {}
-
-impl Display for FFmpegError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FFmpeg execution failed: {}", self.status)
-    }
-}
-
-async fn execute_ffmpeg_encoding(
-    input: &Path,
-    output: &Path,
-    codec: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let result = Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-i")
-        .arg(&input)
-        .args(&["-c:v", codec])
-        .args(&["-movflags", "+faststart"])
-        // Ensure that the height is divisible by 2.
-        .args(&[
-            "-vf",
-            concat!(
-                "scale=ceil(iw/2)*2",
-                ":ceil(ih/2)*2",
-                ":force_original_aspect_ratio=decrease"
-            ),
-        ])
-        .arg(&output)
-        .output()
-        .await?;
-
-    match result.status.success() {
-        true => Ok(()),
-        false => Err(Box::new(FFmpegError {
-            status: result.status,
-        })),
-    }
 }
 
 #[derive(Debug)]
