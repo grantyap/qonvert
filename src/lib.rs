@@ -1,6 +1,18 @@
-use std::{fmt::Display, path::Path, process::ExitStatus, str};
+pub mod progress;
 
-use tokio::process::Command;
+use std::{
+    fmt::Display,
+    path::Path,
+    process::{ExitStatus, Stdio},
+    str,
+};
+
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
+
+use progress::FFmpegProgressUpdate;
 
 #[derive(Debug)]
 pub struct FFmpegError {
@@ -20,30 +32,108 @@ impl Display for FFmpegError {
     }
 }
 
-pub async fn execute_ffmpeg_encoding(
+fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
+    let mut command = Command::new("ffmpeg");
+
+    command.args(["-stats_period", "0.1s"]);
+
+    // Emit progress to `stdout`.
+    command.args(["-progress", "pipe:1"]);
+
+    // Overwrite the output file.
+    // TODO: Maybe provide an option for overriding?
+    command.arg("-y");
+
+    command.args(["-i", &input.to_string_lossy()]);
+
+    // Use the given codec, else use FFmpeg's default codec for the output extension.
+    if let Some(codec) = codec {
+        command.args(["-c:v", codec]);
+    }
+
+    command
+        .args(["-movflags", "+faststart"])
+        // Ensure that the dimensions are divisible by 2.
+        .args(["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2"])
+        .arg(output);
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command
+}
+
+pub async fn execute_ffmpeg_encoding<F>(
     input: &Path,
     output: &Path,
     codec: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::new("ffmpeg");
-    command.arg("-y").args(&["-i", &input.to_string_lossy()]);
-    if let Some(codec) = codec {
-        command.args(&["-c:v", codec]);
-    }
-    command
-        .args(&["-movflags", "+faststart"])
-        // Ensure that the dimensions are divisible by 2.
-        .args(&["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2"])
-        .arg(&output);
+    on_progress_update: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FFmpegProgressUpdate,
+{
+    let mut command = ffmpeg_command(input, output, codec);
+    let mut process = command.spawn()?;
 
-    let result = command.output().await?;
-    match result.status.success() {
-        true => Ok(()),
-        false => Err(Box::new(FFmpegError {
-            status: result.status,
-            stderr: str::from_utf8(&result.stderr)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|e| format!("Could not parse stderr: {}", e)),
-        })),
+    // Set up reading from `stdout` and `stderr`.
+
+    let stdout = process.stdout.take().unwrap();
+    let mut stdout_reader = BufReader::new(stdout).lines();
+
+    let mut error_string = String::new();
+    let stderr = process.stderr.take().unwrap();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    // Execute the command.
+    let result_handle = tokio::spawn(async move { process.wait().await });
+
+    // Read from `stdout` and `stderr`.
+
+    progress::parse(&mut stdout_reader, on_progress_update).await?;
+
+    while let Some(line) = stderr_reader.next_line().await? {
+        error_string = format!("{}\n{}", error_string, line).trim().to_string();
     }
+
+    // Wait for the command to finish.
+    let result = result_handle.await.expect("Could not join result_handle");
+
+    let Ok(status) = result else {
+        return Err(Box::new(result.unwrap_err()));
+    };
+
+    if !status.success() {
+        return Err(Box::new(FFmpegError {
+            status,
+            stderr: error_string,
+        }));
+    }
+
+    Ok(())
+}
+
+pub async fn get_frame_count_from_file_path(
+    input: &Path,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut command = Command::new("ffprobe");
+    command.args(["-v", "error"]);
+
+    // TODO: Handle audio streams as well.
+    command.args(["-select_streams", "v:0"]);
+
+    command
+        .arg("-count_packets")
+        .args(["-show_entries", "stream=nb_read_packets"])
+        .args(["-of", "csv=p=0"])
+        .arg(input);
+
+    // Parse from `stdout` into a `u64`.
+    let stdout = command.output().await?.stdout;
+    let output = str::from_utf8(&stdout)?.trim();
+    output.parse::<u64>().map_err(|err| {
+        let dyn_err: Box<dyn std::error::Error> = Box::new(err);
+        dyn_err
+    })
 }

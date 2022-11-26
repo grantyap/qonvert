@@ -1,11 +1,13 @@
+mod path;
+
+use std::path::{Path, PathBuf};
+
 use clap::Parser;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
-use qonvert::execute_ffmpeg_encoding;
-use std::{
-    fmt::Display,
-    path::{Path, PathBuf},
-};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
+use path::{get_input_file_paths, get_output_file_paths};
+use qonvert::progress::FFmpegProgress;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -31,116 +33,66 @@ struct Args {
     verbose: bool,
 }
 
-#[derive(Debug)]
-struct InvalidDirectoryError {
-    path: PathBuf,
+struct EncodingProcess {
+    input_file_path: PathBuf,
+    output_file_path: PathBuf,
+    frame_count: u64,
+    progress_bar: ProgressBar,
+    codec: Option<String>,
 }
 
-impl std::error::Error for InvalidDirectoryError {}
-
-impl Display for InvalidDirectoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "'{}' is not a valid directory",
-            self.path.to_string_lossy()
-        )
-    }
-}
-
-#[derive(Debug)]
-struct MultipleInputDirectoriesError {}
-
-impl std::error::Error for MultipleInputDirectoriesError {}
-
-impl Display for MultipleInputDirectoriesError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Either a single directory or multiple files can be used as input"
-        )
-    }
-}
-
-async fn get_output_file_paths<T, U>(
-    output_directory: T,
-    input_file_paths: &[U],
-    output_file_type: &str,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
-where
-    T: AsRef<Path>,
-    U: AsRef<Path>,
-{
-    if !output_directory.as_ref().is_dir() {
-        return Err(Box::new(InvalidDirectoryError {
-            path: output_directory.as_ref().to_path_buf(),
-        }));
-    }
-
-    let mut output_file_paths: Vec<PathBuf> = vec![];
-    for path in input_file_paths {
-        let output_file_path = {
-            let path_with_extension = path.as_ref().with_extension(output_file_type);
-            output_directory
-                .as_ref()
-                .strip_prefix(".")?
-                .join(path_with_extension)
+impl EncodingProcess {
+    fn new<T, U>(
+        input_file_path: T,
+        output_file_path: U,
+        frame_count: u64,
+        progress_bar: ProgressBar,
+        codec: Option<String>,
+    ) -> Self
+    where
+        T: AsRef<Path>,
+        U: AsRef<Path>,
+    {
+        return Self {
+            input_file_path: input_file_path.as_ref().to_owned(),
+            output_file_path: output_file_path.as_ref().to_owned(),
+            frame_count,
+            progress_bar,
+            codec,
         };
-        output_file_paths.push(output_file_path);
     }
-
-    Ok(output_file_paths)
 }
 
-async fn get_input_file_paths<T>(
-    input_file_paths: &[T],
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
+impl std::fmt::Debug for EncodingProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncodingProcess")
+            .field("input_file_path", &self.input_file_path)
+            .field("output_file_path", &self.output_file_path)
+            .field("frame_count", &self.frame_count)
+            .field("codec", &self.codec)
+            .finish()
+    }
+}
+
+fn new_progress_bar<S>(message: S, frame_count: u64, progress_bars: &MultiProgress) -> ProgressBar
 where
-    T: AsRef<Path>,
+    S: Into<String>,
 {
-    // If there's only one path and it is a directory,
-    // return all the file paths inside it.
-    if input_file_paths.len() == 1 {
-        let input_file_path = input_file_paths[0].as_ref();
-        if input_file_path.is_dir() {
-            let mut results: Vec<PathBuf> = vec![];
+    let template_string = concat!(
+        "  \x1b[1;36m{wide_msg}\x1b[0m\n",
+        "    {percent:>3}% {bar:40.green/cyan} \x1b[2m{pos}/{len} ({eta} left)\x1b[22m"
+    );
 
-            let mut directory = tokio::fs::read_dir(input_file_path).await?;
-            while let Some(path) = directory.next_entry().await? {
-                let path = path.path();
-                if path.is_dir() {
-                    continue;
-                }
-                results.push(path);
-            }
+    let pb = ProgressBar::new(frame_count)
+        .with_style(ProgressStyle::with_template(template_string).unwrap())
+        .with_message(message.into());
 
-            return Ok(results);
-        }
-    }
-
-    let mut results: Vec<PathBuf> = vec![];
-    for input_file_path in input_file_paths {
-        // If there are multiple input paths, none of the paths can be directories.
-        if input_file_path.as_ref().is_dir() {
-            return Err(Box::new(MultipleInputDirectoriesError {}));
-        }
-
-        results.push(input_file_path.as_ref().to_path_buf());
-    }
-
-    Ok(results)
+    progress_bars.add(pb)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-
-    let input_file_paths = get_input_file_paths(&args.input_paths).await?;
-    let output_directory = args
-        .output_directory
-        .unwrap_or_else(|| Path::new(".").to_path_buf());
-    let output_file_paths =
-        get_output_file_paths(&output_directory, &input_file_paths, &args.output_file_type).await?;
 
     // Define default codecs for certain file types.
     let codec = match args.codec {
@@ -152,62 +104,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(codec) = &codec {
-        println!("Converting files with {}:", codec);
+        println!("Converting file(s) with \x1b[36m{}\x1b[0m:", codec);
     } else {
         println!("Converting:");
     }
 
-    for input_file_path in &input_file_paths {
-        println!("  {}", input_file_path.to_string_lossy());
-    }
+    let input_file_paths = get_input_file_paths(&args.input_paths).await?;
+    let file_count = input_file_paths.len();
 
-    println!("\nDone:");
+    let output_directory = args
+        .output_directory
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let output_file_paths =
+        get_output_file_paths(&output_directory, &input_file_paths, &args.output_file_type).await?;
 
-    let progress_bar = ProgressBar::new(input_file_paths.len() as u64);
-    progress_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {wide_msg}"),
-    );
-    progress_bar.enable_steady_tick(1_000);
+    let input_and_output_file_paths = input_file_paths
+        .into_iter()
+        .zip(output_file_paths.into_iter());
+    let progress_bars = MultiProgress::new();
 
-    futures::stream::iter(input_file_paths.iter().zip(output_file_paths.iter()))
-        .for_each_concurrent(None, |(input_path, output_path)| async {
-            progress_bar.set_message(format!(
-                "{}",
-                input_path.file_name().unwrap().to_string_lossy()
-            ));
+    futures::stream::iter(input_and_output_file_paths)
+        // Create an `EncodingProcess` for each input and output file pair.
+        .then(|(input_file_path, output_file_path)| async {
+            let frame_count = qonvert::get_frame_count_from_file_path(&input_file_path)
+                .await
+                .expect("Could not get frame count");
 
-            let encoding_result =
-                execute_ffmpeg_encoding(input_path, output_path, codec.as_deref()).await;
+            let progress_bar = new_progress_bar(
+                input_file_path.to_string_lossy(),
+                frame_count,
+                &progress_bars,
+            );
 
-            progress_bar.inc(1);
-            match encoding_result {
-                Ok(_) => {
-                    progress_bar.println(format!(
-                        "\x1b[0;32m  {}\x1b[0m",
-                        output_path.to_string_lossy()
-                    ));
-                }
-                Err(e) => match &args.verbose {
-                    true => {
-                        progress_bar.println(format!(
-                            "\x1b[0;31m  {} failed:\n{}\x1b[0m",
-                            input_path.to_string_lossy(),
-                            e
-                        ));
-                    }
-                    false => {
-                        progress_bar.println(format!(
-                            "\x1b[0;31m  {} failed\x1b[0m",
-                            input_path.to_string_lossy()
-                        ));
-                    }
+            EncodingProcess::new(
+                input_file_path,
+                output_file_path,
+                frame_count,
+                progress_bar,
+                codec.clone(),
+            )
+        })
+        // Concurrently execute an FFmpeg encoding command for each encoding process.
+        .for_each_concurrent(None, |encoding_process| async move {
+            qonvert::execute_ffmpeg_encoding(
+                &encoding_process.input_file_path,
+                &encoding_process.output_file_path,
+                encoding_process.codec.as_deref(),
+                |progress: FFmpegProgress| {
+                    encoding_process.progress_bar.set_position(progress.frame);
                 },
-            }
+            )
+            .await
+            .expect("Could not execute FFmpeg command");
+
+            encoding_process.progress_bar.finish();
         })
         .await;
 
-    progress_bar.finish();
+    println!(
+        "Successfully converted \x1b[32m{}\x1b[0m file(s)!",
+        file_count
+    );
 
     Ok(())
 }
