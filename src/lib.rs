@@ -35,8 +35,6 @@ impl Display for FFmpegError {
 fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
     let mut command = Command::new("ffmpeg");
 
-    command.args(["-stats_period", "0.1s"]);
-
     // Emit progress to `stdout`.
     command.args(["-progress", "pipe:1"]);
 
