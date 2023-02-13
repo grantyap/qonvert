@@ -77,6 +77,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "clean-path"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaa6b4b263a5d737e9bf6b7c09b72c41a5480aec4d7219af827f6564e950b6a5"
+
+[[package]]
 name = "console"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -384,6 +390,7 @@ name = "qonvert"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "clean-path",
  "futures",
  "indicatif",
  "tokio",
