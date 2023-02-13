@@ -1,5 +1,6 @@
 //! This module contains helper functions for getting file paths.
 
+use clean_path::Clean;
 use std::{
     fmt::Display,
     path::{Path, PathBuf},
@@ -51,17 +52,15 @@ where
         }));
     }
 
-    let mut output_file_paths: Vec<PathBuf> = vec![];
-    for path in input_file_paths {
-        let output_file_path = {
-            let path_with_extension = path.as_ref().with_extension(output_file_type);
+    let output_file_paths = input_file_paths
+        .iter()
+        .map(|path| {
             output_directory
                 .as_ref()
-                .strip_prefix(".")?
-                .join(path_with_extension)
-        };
-        output_file_paths.push(output_file_path);
-    }
+                .join(path.as_ref().with_extension(output_file_type))
+                .clean()
+        })
+        .collect();
 
     Ok(output_file_paths)
 }
