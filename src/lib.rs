@@ -51,6 +51,8 @@ fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
 
     command
         .args(["-movflags", "+faststart"])
+        // Ensure that `.gif` colors are correctly converted.
+        .args(["-pix_fmt", "yuv420p"])
         // Ensure that the dimensions are divisible by 2.
         .args(["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2"])
         .arg(output);
