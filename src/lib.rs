@@ -50,7 +50,7 @@ fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
     }
 
     command
-        .args(["-movflags", "+faststart"])
+        .args(["-movflags", "faststart"])
         // Ensure that `.gif` colors are correctly converted.
         .args(["-pix_fmt", "yuv420p"])
         // Ensure that the dimensions are divisible by 2.
