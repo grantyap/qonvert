@@ -55,10 +55,22 @@ where
     let output_file_paths = input_file_paths
         .iter()
         .map(|path| {
-            output_directory
-                .as_ref()
-                .join(path.as_ref().with_extension(output_file_type))
-                .clean()
+            let path = path.as_ref();
+
+            if path.extension().expect("Path should have an extension") == output_file_type {
+                path.with_file_name(format!(
+                    "{} reencode.{}",
+                    path.file_stem()
+                        .expect("Path should have a file stem")
+                        .to_string_lossy(),
+                    output_file_type
+                ))
+            } else {
+                output_directory
+                    .as_ref()
+                    .join(path.with_extension(output_file_type))
+                    .clean()
+            }
         })
         .collect();
 
