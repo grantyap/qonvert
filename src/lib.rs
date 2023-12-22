@@ -47,6 +47,14 @@ fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
     // Use the given codec, else use FFmpeg's default codec for the output extension.
     if let Some(codec) = codec {
         command.args(["-c:v", codec]);
+
+        match codec {
+            // Support h.265 thumbnail previews on Apple devices.
+            "libx265" | "hevc_videotoolbox" => {
+                command.args(["-tag:v", "hvc1"]);
+            }
+            _ => (),
+        };
     }
 
     command
