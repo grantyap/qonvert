@@ -106,11 +106,7 @@ where
     }
 
     // Wait for the command to finish.
-    let result = result_handle.await.expect("Could not join result_handle");
-
-    let Ok(status) = result else {
-        return Err(Box::new(result.unwrap_err()));
-    };
+    let status = result_handle.await??;
 
     if !status.success() {
         return Err(Box::new(FFmpegError {
