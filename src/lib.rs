@@ -48,10 +48,24 @@ fn ffmpeg_command(input: &Path, output: &Path, codec: Option<&str>) -> Command {
     if let Some(codec) = codec {
         command.args(["-c:v", codec]);
 
+        // TODO: Allow arbitrary arguments for any codec.
         match codec {
-            // Support h.265 thumbnail previews on Apple devices.
-            "libx265" | "hevc_videotoolbox" => {
+            "libx265" => {
+                // Support h.265 thumbnail previews on Apple devices.
                 command.args(["-tag:v", "hvc1"]);
+
+                // The default of 28 has clearly worse quality. 24 looks good
+                // enough with significant size improvements.
+                command.args(["-crf", "24"]);
+            }
+            "hevc_videotoolbox" => {
+                // Support h.265 thumbnail previews on Apple devices.
+                command.args(["-tag:v", "hvc1"]);
+
+                // 65 quality is a good quality/size ratio. Any higher and the
+                // size starts to explode. Any lower and the quality starts to
+                // look significantly worse.
+                command.args(["-q:v", "65"]);
             }
             _ => (),
         };
