@@ -1,6 +1,22 @@
+use core::fmt;
 use std::collections::HashMap;
 
 use tokio::io::{AsyncBufRead, Lines};
+
+#[derive(Debug, Clone)]
+pub enum FFmpegProgressError<'a> {
+    Parse(&'a str),
+}
+
+impl fmt::Display for FFmpegProgressError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(key) => write!(f, "Could not parse key '{}' from FFprobe progress logs", key),
+        }
+    }
+}
+
+impl std::error::Error for FFmpegProgressError<'_> {}
 
 pub trait FFmpegProgressUpdate: FnOnce(FFmpegProgress) + Copy {}
 
@@ -29,15 +45,20 @@ pub struct FFmpegProgress {
 }
 
 impl FFmpegProgress {
-    fn from_parsed_progress(parsed_progress: &HashMap<String, String>) -> Self {
-        Self {
+    fn try_from_parsed_progress(
+        parsed_progress: &HashMap<String, String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
             frame: parsed_progress
                 .get("frame")
-                .unwrap()
-                .parse::<u64>()
-                .unwrap(),
-            progress: FFmpegProgressState::from_str(parsed_progress.get("progress").unwrap()),
-        }
+                .ok_or(FFmpegProgressError::Parse("frame"))?
+                .parse::<u64>()?,
+            progress: FFmpegProgressState::from_str(
+                parsed_progress
+                    .get("progress")
+                    .ok_or(FFmpegProgressError::Parse("progress"))?,
+            ),
+        })
     }
 }
 
@@ -64,7 +85,7 @@ where
         parsed_progress.insert(key.to_string(), value.to_string());
 
         if key == "progress" {
-            let progress = FFmpegProgress::from_parsed_progress(&parsed_progress);
+            let progress = FFmpegProgress::try_from_parsed_progress(&parsed_progress)?;
             on_progress_update(progress);
 
             parsed_progress.clear();

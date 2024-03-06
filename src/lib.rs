@@ -113,11 +113,16 @@ where
 
     // Read from `stdout` and `stderr`.
 
-    progress::parse(&mut stdout_reader, on_progress_update).await?;
-
-    while let Some(line) = stderr_reader.next_line().await? {
-        error_string = format!("{}\n{}", error_string, line).trim().to_string();
-    }
+    match progress::parse(&mut stdout_reader, on_progress_update).await {
+        Ok(_) => {
+            while let Some(line) = stderr_reader.next_line().await? {
+                error_string = format!("{}\n{}", error_string, line).trim().to_string();
+            }
+        }
+        Err(error) => {
+            println!("Could not parse encoding progress. Proceeding without updating progress bars. Error: {}", error);
+        }
+    };
 
     // Wait for the command to finish.
     let status = result_handle.await??;

@@ -36,8 +36,8 @@ struct Args {
 struct EncodingProcess {
     input_file_path: PathBuf,
     output_file_path: PathBuf,
-    frame_count: u64,
-    progress_bar: ProgressBar,
+    frame_count: Option<u64>,
+    progress_bar: Option<ProgressBar>,
     codec: Option<String>,
 }
 
@@ -45,8 +45,8 @@ impl EncodingProcess {
     fn new<T, U>(
         input_file_path: T,
         output_file_path: U,
-        frame_count: u64,
-        progress_bar: ProgressBar,
+        frame_count: Option<u64>,
+        progress_bar: Option<ProgressBar>,
         codec: Option<String>,
     ) -> Self
     where
@@ -126,15 +126,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     futures::stream::iter(input_and_output_file_paths)
         // Create an `EncodingProcess` for each input and output file pair.
         .then(|(input_file_path, output_file_path)| async {
-            let frame_count = qonvert::get_frame_count_from_file_path(&input_file_path)
-                .await
-                .expect("Could not get frame count");
+            let (frame_count, progress_bar) = match qonvert::get_frame_count_from_file_path(&input_file_path).await {
+                Ok(frame_count) => {
+                    let progress_bar = new_progress_bar(
+                        input_file_path.to_string_lossy(),
+                        frame_count,
+                        &progress_bars,
+                    );
 
-            let progress_bar = new_progress_bar(
-                input_file_path.to_string_lossy(),
-                frame_count,
-                &progress_bars,
-            );
+                    (Some(frame_count), Some(progress_bar))
+                },
+                Err(err) => {
+                    println!("Could not read frame count from FFprobe. Proceeding without progress bars. Error: {}", err);
+                    (None, None)
+                }
+            };
 
             EncodingProcess::new(
                 input_file_path,
@@ -151,13 +157,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &encoding_process.output_file_path,
                 encoding_process.codec.as_deref(),
                 |progress: FFmpegProgress| {
-                    encoding_process.progress_bar.set_position(progress.frame);
+                    match &encoding_process.progress_bar {
+                        Some(progress_bar) => {
+                            progress_bar.set_position(progress.frame);
+                        },
+                        None => ()
+                    };
                 },
             )
             .await
             .expect("Could not execute FFmpeg command");
 
-            encoding_process.progress_bar.finish();
+            match encoding_process.progress_bar {
+                Some(progress_bar) => {
+                    progress_bar.finish();
+                },
+                None => ()
+            };
         })
         .await;
 
