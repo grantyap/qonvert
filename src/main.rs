@@ -28,6 +28,10 @@ struct Args {
     #[clap(short, long, value_parser)]
     codec: Option<String>,
 
+    /// The maximum number of FFmpeg processes to run concurrently
+    #[clap(short, long, value_parser)]
+    limit: Option<usize>,
+
     /// Enable debugging information
     #[clap(short, long, value_parser, default_value_t = false)]
     verbose: bool,
@@ -151,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })
         // Concurrently execute an FFmpeg encoding command for each encoding process.
-        .for_each_concurrent(None, |encoding_process| async move {
+        .for_each_concurrent(args.limit, |encoding_process| async move {
             qonvert::execute_ffmpeg_encoding(
                 &encoding_process.input_file_path,
                 &encoding_process.output_file_path,
