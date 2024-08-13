@@ -54,28 +54,29 @@ var (
 			for i := uint(0); i < limit; i++ {
 				go func() {
 					for item := range jobs {
-						progress := make(chan transcode.ItemWithProgress)
+						defer wg.Done()
+
+						result := transcode.Execute(*item.Item, codec)
 						previousFrameCount := item.Item.CurrentFrame
 						previousTime := time.Now()
 
-						go func() {
-							for p := range progress {
-								deltaFrames := p.CurrentFrame - previousFrameCount
-								now := time.Now()
-								deltaTime := now.Sub(previousTime)
-								previousTime = now
+						for itemResult := range result {
+							p := itemResult.Item
+							err := itemResult.Error
 
-								previousFrameCount = p.CurrentFrame
-								item.ProgressBar.EwmaIncrBy(int(deltaFrames), deltaTime)
+							if err != nil {
+								cmd.Println("failed:", itemResult.Item.Item.OutputPath, err)
+								return
 							}
-						}()
 
-						err := transcode.Execute(*item.Item, codec, progress)
-						if err != nil {
-							cmd.Println("failed:", item.Item.Item.OutputPath, err)
+							deltaFrames := p.CurrentFrame - previousFrameCount
+							now := time.Now()
+							deltaTime := now.Sub(previousTime)
+							previousTime = now
+
+							previousFrameCount = p.CurrentFrame
+							item.ProgressBar.EwmaIncrBy(int(deltaFrames), deltaTime)
 						}
-
-						wg.Done()
 					}
 				}()
 			}

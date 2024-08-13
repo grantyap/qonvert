@@ -31,19 +31,17 @@ var defaultCodecArgs = map[string][]string{
 	},
 }
 
-func Execute(item ItemWithProgress, codec string, progress chan ItemWithProgress) error {
-	sockFilePath := TempSock(item, progress)
-
+func buildArgs(item Item, codec string, socketFilePath string) []string {
 	args := []string{
 		// Emit progress to the socket file.
-		"-progress", "unix://" + sockFilePath,
+		"-progress", "unix://" + socketFilePath,
 
 		// Overwrite the output file.
 		// TODO: Maybe provide an option for overriding existing files?
 		"-y",
 
 		// The input file.
-		"-i", item.Item.InputPath,
+		"-i", item.InputPath,
 	}
 
 	if codec != "" {
@@ -66,20 +64,42 @@ func Execute(item ItemWithProgress, codec string, progress chan ItemWithProgress
 		"-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2",
 	)
 
-	args = append(args, item.Item.OutputPath)
+	args = append(args, item.OutputPath)
 
+	return args
+}
+
+type Result struct {
+	Item  ItemWithProgress
+	Error error
+}
+
+func Execute(item ItemWithProgress, codec string) <-chan Result {
+	sockFilePath, progress := readProgress(item)
+	result := make(chan Result)
+	go func() {
+		for p := range progress {
+			result <- Result{Item: p, Error: nil}
+		}
+	}()
+
+	args := buildArgs(*item.Item, codec, sockFilePath)
 	cmd := exec.Command("ffmpeg", args[:]...)
-	err := cmd.Run()
+	go func() {
+		err := cmd.Run()
+		result <- Result{Item: item, Error: err}
+		close(result)
+	}()
 
-	return err
+	return result
 }
 
 // Taken from https://github.com/u2takey/ffmpeg-go/blob/898ebfd93985f0f69cde36e466094cd453caa349/examples/showProgress.go#L41
-func TempSock(item ItemWithProgress, progress chan ItemWithProgress) string {
-	// serve
+func readProgress(item ItemWithProgress) (string, <-chan ItemWithProgress) {
+	progress := make(chan ItemWithProgress)
 
-	sockFileName := path.Join(os.TempDir(), fmt.Sprintf("%d_sock", rand.Int()))
-	l, err := net.Listen("unix", sockFileName)
+	socketFilePath := path.Join(os.TempDir(), fmt.Sprintf("%d_sock", rand.Int()))
+	l, err := net.Listen("unix", socketFilePath)
 	if err != nil {
 		panic(err)
 	}
@@ -102,9 +122,11 @@ func TempSock(item ItemWithProgress, progress chan ItemWithProgress) string {
 				close(progress)
 				return
 			}
+
 			data += string(buf)
 			a := re.FindAllStringSubmatch(data, -1)
 			value := uint64(0)
+
 			if len(a) > 0 && len(a[len(a)-1]) > 0 {
 				c, err := strconv.ParseUint(a[len(a)-1][len(a[len(a)-1])-1], 10, 64)
 				if err != nil {
@@ -114,6 +136,7 @@ func TempSock(item ItemWithProgress, progress chan ItemWithProgress) string {
 				}
 				value = c
 			}
+
 			if strings.Contains(data, "progress=end") {
 				progress <- ItemWithProgress{Item: item.Item, CurrentFrame: item.FrameCount, FrameCount: item.FrameCount}
 				close(progress)
@@ -124,5 +147,5 @@ func TempSock(item ItemWithProgress, progress chan ItemWithProgress) string {
 		}
 	}()
 
-	return sockFileName
+	return socketFilePath, progress
 }
